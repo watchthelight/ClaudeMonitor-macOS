@@ -2,53 +2,111 @@
 # -*- coding: utf-8 -*-
 """
 Claude Code Usage Monitor - SwiftBar Plugin
-Shows usage percentages based on calibrated limits.
+Fetches plan type from API and calculates usage from local session data.
 """
 
 import json
 import glob
+import subprocess
+import os
+import urllib.request
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from collections import defaultdict
 
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 
-# =============================================================================
-# CALIBRATION - Adjust these based on your /status readings
-# =============================================================================
-# Session limit (5-hour rolling window) - in prompts
-SESSION_PROMPT_LIMIT = 372  # ~93 prompts = 25%
+# Calibrated limits per plan tier (based on real /status observations)
+# These are rough estimates - adjust based on your experience
+PLAN_LIMITS = {
+    "default_claude_max_20x": {
+        "name": "Max 20x",
+        "session_prompts": 800,      # ~200-800 range
+        "weekly_opus_tokens": 1_400_000_000,
+        "weekly_sonnet_tokens": 4_000_000_000,
+    },
+    "default_claude_max_5x": {
+        "name": "Max 5x",
+        "session_prompts": 372,      # ~93 prompts = 25%
+        "weekly_opus_tokens": 1_400_000_000,
+        "weekly_sonnet_tokens": 4_000_000_000,
+    },
+    "default_claude_pro": {
+        "name": "Pro",
+        "session_prompts": 150,      # ~10-40 range, being generous
+        "weekly_opus_tokens": 500_000_000,
+        "weekly_sonnet_tokens": 2_000_000_000,
+    },
+}
 
-# Weekly limits - in tokens (input + output + cache_write)
-WEEKLY_OPUS_LIMIT = 1_400_000_000    # ~263M = 19%
-WEEKLY_SONNET_LIMIT = 4_000_000_000  # ~40M = 1%
-WEEKLY_HAIKU_LIMIT = 10_000_000_000  # Haiku has very high limits
+DEFAULT_LIMITS = PLAN_LIMITS["default_claude_max_5x"]
 
-# Weekly reset: Thursday 3:00 AM local time
-WEEKLY_RESET_WEEKDAY = 3  # Thursday (0=Monday)
-WEEKLY_RESET_HOUR = 3
-
-# =============================================================================
+WEEKLY_RESET_WEEKDAY = 3  # Thursday
+WEEKLY_RESET_HOUR = 3     # 3:00 AM
 
 # Colors
 GREEN = "#22c55e"
 YELLOW = "#eab308"
 ORANGE = "#f97316"
 RED = "#ef4444"
-BLUE = "#3b82f6"
 GRAY = "#6b7280"
-WHITE = "#f4f4f5"
 
 
 def get_color(pct: float) -> str:
-    if pct < 50:
-        return GREEN
-    elif pct < 75:
-        return YELLOW
-    elif pct < 90:
-        return ORANGE
+    if pct < 50: return GREEN
+    if pct < 75: return YELLOW
+    if pct < 90: return ORANGE
     return RED
+
+
+def get_oauth_token():
+    """Extract OAuth token from macOS Keychain."""
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-a", os.environ.get("USER", ""),
+             "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            creds = json.loads(result.stdout.strip())
+            return creds.get("claudeAiOauth", {}).get("accessToken")
+    except:
+        pass
+    return None
+
+
+def fetch_plan_info():
+    """Fetch plan type from Anthropic API."""
+    token = get_oauth_token()
+    if not token:
+        return None
+
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/profile",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "anthropic-beta": "oauth-2025-04-20",
+                "User-Agent": "claude-cli/2.0.76"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            return {
+                "rate_limit_tier": data.get("organization", {}).get("rate_limit_tier"),
+                "org_type": data.get("organization", {}).get("organization_type"),
+                "display_name": data.get("account", {}).get("display_name"),
+            }
+    except:
+        return None
+
+
+def get_limits_for_tier(tier: str) -> dict:
+    """Get calibrated limits based on plan tier."""
+    return PLAN_LIMITS.get(tier, DEFAULT_LIMITS)
 
 
 def get_weekly_start() -> datetime:
@@ -57,13 +115,12 @@ def get_weekly_start() -> datetime:
     days_since_thursday = (now.weekday() - WEEKLY_RESET_WEEKDAY) % 7
     if days_since_thursday == 0 and now.hour < WEEKLY_RESET_HOUR:
         days_since_thursday = 7
-
     last_thursday = now - timedelta(days=days_since_thursday)
     return last_thursday.replace(hour=WEEKLY_RESET_HOUR, minute=0, second=0, microsecond=0)
 
 
 def get_session_start() -> datetime:
-    """Estimate session start by finding oldest message in last 5 hours."""
+    """Find when the current 5-hour session started."""
     now = datetime.now(timezone.utc)
     five_hours_ago = now - timedelta(hours=5)
     oldest = None
@@ -90,13 +147,12 @@ def get_session_start() -> datetime:
 
 
 def parse_usage(since: datetime) -> dict:
-    """Parse usage since given time."""
+    """Parse usage from local session files."""
     data = {
         "prompts": 0,
         "opus_tokens": 0,
         "sonnet_tokens": 0,
         "haiku_tokens": 0,
-        "other_tokens": 0,
     }
 
     for fp in glob.glob(str(PROJECTS_DIR / "*" / "*.jsonl")):
@@ -112,6 +168,7 @@ def parse_usage(since: datetime) -> dict:
                         if ts < since:
                             continue
 
+                        # Count user prompts
                         if e.get("type") == "user":
                             msg = e.get("message", {})
                             content = msg.get("content", "")
@@ -121,6 +178,7 @@ def parse_usage(since: datetime) -> dict:
                                 if any(c.get("type") == "text" for c in content if isinstance(c, dict)):
                                     data["prompts"] += 1
 
+                        # Count token usage
                         if e.get("type") == "assistant":
                             u = e.get("message", {}).get("usage", {})
                             model = e.get("message", {}).get("model", "").lower()
@@ -135,8 +193,6 @@ def parse_usage(since: datetime) -> dict:
                                     data["sonnet_tokens"] += tokens
                                 elif "haiku" in model:
                                     data["haiku_tokens"] += tokens
-                                else:
-                                    data["other_tokens"] += tokens
                     except:
                         continue
         except:
@@ -173,42 +229,45 @@ def fmt_tokens(n: int) -> str:
 def main():
     now = datetime.now(timezone.utc)
 
-    # Get time boundaries
+    # Fetch plan info from API
+    plan_info = fetch_plan_info()
+    tier = plan_info.get("rate_limit_tier") if plan_info else None
+    limits = get_limits_for_tier(tier) if tier else DEFAULT_LIMITS
+    plan_name = limits["name"]
+
+    # Calculate time windows
     session_start = get_session_start()
     weekly_start = get_weekly_start()
 
-    # Calculate resets
+    # Calculate reset times
     session_elapsed = now - session_start
     session_remaining = timedelta(hours=5) - session_elapsed
     if session_remaining.total_seconds() < 0:
         session_remaining = timedelta(0)
 
-    # Next Thursday 3AM
     days_until_thursday = (WEEKLY_RESET_WEEKDAY - now.weekday()) % 7
     if days_until_thursday == 0 and now.hour >= WEEKLY_RESET_HOUR:
         days_until_thursday = 7
     next_reset = now.replace(hour=WEEKLY_RESET_HOUR, minute=0, second=0, microsecond=0) + timedelta(days=days_until_thursday)
     weekly_remaining = next_reset - now
 
-    # Get usage
+    # Parse usage
     session = parse_usage(session_start)
     weekly = parse_usage(weekly_start)
 
     # Calculate percentages
-    session_pct = min(100, (session["prompts"] / SESSION_PROMPT_LIMIT) * 100) if SESSION_PROMPT_LIMIT > 0 else 0
+    session_pct = min(100, (session["prompts"] / limits["session_prompts"]) * 100) if limits["session_prompts"] > 0 else 0
 
-    weekly_opus_pct = min(100, (weekly["opus_tokens"] / WEEKLY_OPUS_LIMIT) * 100) if WEEKLY_OPUS_LIMIT > 0 else 0
-    weekly_sonnet_pct = min(100, (weekly["sonnet_tokens"] / WEEKLY_SONNET_LIMIT) * 100) if WEEKLY_SONNET_LIMIT > 0 else 0
+    opus_pct = min(100, (weekly["opus_tokens"] / limits["weekly_opus_tokens"]) * 100) if limits["weekly_opus_tokens"] > 0 else 0
+    sonnet_pct = min(100, (weekly["sonnet_tokens"] / limits["weekly_sonnet_tokens"]) * 100) if limits["weekly_sonnet_tokens"] > 0 else 0
 
-    # Combined weekly (weighted by actual limit proportions)
-    total_weekly_tokens = weekly["opus_tokens"] + weekly["sonnet_tokens"] + weekly["haiku_tokens"]
-    # Use opus percentage as primary since it's usually the constraint
-    weekly_pct = max(weekly_opus_pct, weekly_sonnet_pct)
+    # Use highest as "all models" estimate
+    weekly_pct = max(opus_pct, sonnet_pct)
 
-    # Overall status (worse of session or weekly)
+    # Overall = worse of session or weekly
     overall_pct = max(session_pct, weekly_pct)
 
-    # Menu bar - show percentage
+    # Menu bar display
     color = get_color(overall_pct)
     if overall_pct >= 90:
         icon = "exclamationmark.triangle.fill"
@@ -220,30 +279,36 @@ def main():
     print(f"{overall_pct:.0f}% | sfSymbol={icon} sfcolor={color}")
     print("---")
 
+    # Plan info
+    api_status = "API" if plan_info else "cached"
+    print(f"Claude Code ({plan_name}) | color={GRAY}")
+    print(f"--Source: {api_status} | color={GRAY}")
+
     # Session
+    print("---")
     session_color = get_color(session_pct)
     print(f"Session: {session_pct:.0f}% | color={session_color}")
-    print(f"--{session['prompts']}/{SESSION_PROMPT_LIMIT} prompts | color={GRAY}")
+    print(f"--{session['prompts']}/{limits['session_prompts']} prompts | color={GRAY}")
     print(f"--Resets in {fmt_time(session_remaining)} | color={GRAY}")
 
     # Weekly
     print("---")
     print(f"Weekly: {weekly_pct:.0f}% | color={get_color(weekly_pct)}")
 
-    opus_color = get_color(weekly_opus_pct)
-    print(f"--Opus: {weekly_opus_pct:.0f}% ({fmt_tokens(weekly['opus_tokens'])}) | color={opus_color}")
+    if weekly["opus_tokens"] > 0 or opus_pct > 0:
+        print(f"--Opus: {opus_pct:.0f}% ({fmt_tokens(weekly['opus_tokens'])}) | color={get_color(opus_pct)}")
 
-    sonnet_color = get_color(weekly_sonnet_pct)
-    print(f"--Sonnet: {weekly_sonnet_pct:.0f}% ({fmt_tokens(weekly['sonnet_tokens'])}) | color={sonnet_color}")
+    if weekly["sonnet_tokens"] > 0 or sonnet_pct > 0:
+        print(f"--Sonnet: {sonnet_pct:.0f}% ({fmt_tokens(weekly['sonnet_tokens'])}) | color={get_color(sonnet_pct)}")
 
     if weekly["haiku_tokens"] > 0:
         print(f"--Haiku: {fmt_tokens(weekly['haiku_tokens'])} | color={GRAY}")
 
-    print(f"--Resets {fmt_time(weekly_remaining)} | color={GRAY}")
+    print(f"--Resets in {fmt_time(weekly_remaining)} | color={GRAY}")
 
     # Actions
     print("---")
-    print(f"Refresh | refresh=true sfSymbol=arrow.clockwise")
+    print("Refresh | refresh=true sfSymbol=arrow.clockwise")
     print(f"Run /status for exact numbers | color={GRAY} size=11")
 
 
