@@ -12,34 +12,40 @@ A lightweight SwiftBar menu bar widget that displays your Claude Code usage stat
 ## Preview
 
 ```
-CC: 45% ▾
+CC ⚡ ▾
 ────────────────────────────────
-Claude Code Usage (Max 5x)
+Claude Code Usage
+Local data only • /status for limits
 ────────────────────────────────
-5-Hour Window
-  └─ 56/125 prompts (45%)
-  └─ API calls: 1,234
-  └─ Tokens: 5.2M
+Last 5 Hours
+  └─ Prompts: 94
+  └─ API Calls: 2,783
+  └─ Tokens: 11.1M (in: 258K, out: 396K)
+  └─ Cache: 189.5M read, 10.5M written
 ────────────────────────────────
-Weekly Usage
-  └─ ~28% of 210h Sonnet limit
-  └─ Tokens: 58.3M
-  └─ Sessions: 12
-  └─ Resets in: 4d 12h
+Last 24 Hours
+  └─ Prompts: 203
+  └─ API Calls: 5,831
+  └─ Tokens: 22.2M
+  └─ Sessions: 22
 ────────────────────────────────
-By Model (Weekly)
-  └─ opus-4-5: 45.2M
-  └─ sonnet-4-5: 12.1M
-  └─ haiku-4-5: 1.0M
+Last 7 Days
+  └─ Prompts: 728
+  └─ Tokens: 74.0M
+  └─ Sessions: 43
+────────────────────────────────
+By Model (7d)
+  └─ opus-4-5: 63.9M (15,399 calls)
+  └─ haiku-4-5: 10.1M (2,181 calls)
 ```
 
 ## Features
 
-- **5-Hour Rolling Window**: Track prompts against burst limit
-- **Weekly Usage**: Token consumption vs weekly quota estimate
-- **Model Breakdown**: See usage per model (Opus, Sonnet, Haiku)
-- **Visual Status**: Color-coded indicators (🟢🟡🟠🔴)
-- **SF Symbols**: Native macOS icons
+- **Raw Usage Data**: Actual prompts, API calls, and token counts
+- **Multiple Time Windows**: 5-hour, 24-hour, and 7-day views
+- **Cache Stats**: See cache read vs write tokens
+- **Model Breakdown**: Usage per model (Opus, Sonnet, Haiku)
+- **SF Symbols**: Native macOS icons (⚡ active, 🌙 idle)
 - **Auto-Refresh**: Updates every 60 seconds
 
 ## Quick Install
@@ -63,31 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/watchthelight/ClaudeMonitor-macOS/m
 chmod +x ~/Library/Application\ Support/SwiftBar/Plugins/claude-usage.60s.py
 ```
 
-### 3. Configure Your Plan
-
-Edit the plugin to match your subscription:
-
-```bash
-# Open in your editor
-open ~/Library/Application\ Support/SwiftBar/Plugins/claude-usage.60s.py
-```
-
-Find line ~49 and change to your plan:
-```python
-CURRENT_PLAN = "pro"      # $20/month
-# CURRENT_PLAN = "max5x"  # $100/month
-# CURRENT_PLAN = "max20x" # $200/month
-```
-
-## Plan Limits (Estimates)
-
-| Plan | Monthly Cost | 5-Hour Prompts | Weekly Sonnet Hours |
-|------|-------------|----------------|---------------------|
-| Pro | $20 | ~10-40 | ~40-80 |
-| Max 5x | $100 | ~50-200 | ~140-280 |
-| Max 20x | $200 | ~200-800 | ~240-480 |
-
-*Note: Actual limits vary based on usage patterns, model selection, and caching.*
+That's it! The widget will appear in your menu bar.
 
 ## How It Works
 
@@ -121,21 +103,6 @@ Rename the file to adjust update frequency:
 - `claude-usage.30s.py` - every 30 seconds
 - `claude-usage.60s.py` - every 60 seconds (default)
 - `claude-usage.5m.py` - every 5 minutes
-
-### Adjust Limit Estimates
-
-Edit the `PLANS` dictionary in the script to fine-tune limits based on your actual experience:
-
-```python
-PLANS = {
-    "pro": {
-        "name": "Pro",
-        "weekly_sonnet_hours": 60,
-        "five_hour_messages": 25,
-    },
-    # ...
-}
-```
 
 ## Technical Details
 
