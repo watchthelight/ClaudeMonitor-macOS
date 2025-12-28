@@ -2,16 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Claude Code Usage Monitor - SwiftBar Plugin
-============================================
-Displays Claude Code usage statistics from local session data.
-
-NOTE: This shows LOCAL usage data only. Actual subscription limits
-are tracked server-side by Anthropic. Use /status in Claude Code
-for official quota information.
+Shows usage percentages based on calibrated limits.
 """
 
 import json
-import os
 import glob
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +13,23 @@ from collections import defaultdict
 
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
+
+# =============================================================================
+# CALIBRATION - Adjust these based on your /status readings
+# =============================================================================
+# Session limit (5-hour rolling window) - in prompts
+SESSION_PROMPT_LIMIT = 372  # ~93 prompts = 25%
+
+# Weekly limits - in tokens (input + output + cache_write)
+WEEKLY_OPUS_LIMIT = 1_400_000_000    # ~263M = 19%
+WEEKLY_SONNET_LIMIT = 4_000_000_000  # ~40M = 1%
+WEEKLY_HAIKU_LIMIT = 10_000_000_000  # Haiku has very high limits
+
+# Weekly reset: Thursday 3:00 AM local time
+WEEKLY_RESET_WEEKDAY = 3  # Thursday (0=Monday)
+WEEKLY_RESET_HOUR = 3
+
+# =============================================================================
 
 # Colors
 GREEN = "#22c55e"
@@ -30,103 +41,108 @@ GRAY = "#6b7280"
 WHITE = "#f4f4f5"
 
 
-def parse_session_files(since_time: datetime) -> dict:
-    """Parse session JSONL files and extract usage data."""
-    usage = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read": 0,
-        "cache_write": 0,
-        "api_calls": 0,
-        "user_turns": 0,
-        "sessions": set(),
-        "models": defaultdict(lambda: {"input": 0, "output": 0, "calls": 0}),
-        "last_activity": None,
-        "first_activity": None,
-    }
+def get_color(pct: float) -> str:
+    if pct < 50:
+        return GREEN
+    elif pct < 75:
+        return YELLOW
+    elif pct < 90:
+        return ORANGE
+    return RED
 
-    if not PROJECTS_DIR.exists():
-        return usage
 
-    for filepath in glob.glob(str(PROJECTS_DIR / "*" / "*.jsonl")):
+def get_weekly_start() -> datetime:
+    """Calculate when the current weekly window started (last Thursday 3AM)."""
+    now = datetime.now(timezone.utc)
+    days_since_thursday = (now.weekday() - WEEKLY_RESET_WEEKDAY) % 7
+    if days_since_thursday == 0 and now.hour < WEEKLY_RESET_HOUR:
+        days_since_thursday = 7
+
+    last_thursday = now - timedelta(days=days_since_thursday)
+    return last_thursday.replace(hour=WEEKLY_RESET_HOUR, minute=0, second=0, microsecond=0)
+
+
+def get_session_start() -> datetime:
+    """Estimate session start by finding oldest message in last 5 hours."""
+    now = datetime.now(timezone.utc)
+    five_hours_ago = now - timedelta(hours=5)
+    oldest = None
+
+    for fp in glob.glob(str(PROJECTS_DIR / "*" / "*.jsonl")):
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(fp, 'r') as f:
                 for line in f:
-                    if not line.strip():
-                        continue
                     try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    ts_str = entry.get("timestamp")
-                    if not ts_str:
-                        continue
-
-                    try:
+                        e = json.loads(line)
+                        ts_str = e.get("timestamp")
+                        if not ts_str:
+                            continue
                         ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                        if ts >= five_hours_ago:
+                            if oldest is None or ts < oldest:
+                                oldest = ts
                     except:
                         continue
-
-                    if ts < since_time:
-                        continue
-
-                    entry_type = entry.get("type")
-
-                    # Count user turns (your actual prompts)
-                    if entry_type == "user":
-                        msg = entry.get("message", {})
-                        content = msg.get("content", "")
-                        # Only count real user messages, not tool results
-                        if isinstance(content, str) and content.strip():
-                            usage["user_turns"] += 1
-                        elif isinstance(content, list):
-                            if any(c.get("type") == "text" for c in content if isinstance(c, dict)):
-                                usage["user_turns"] += 1
-
-                    # Count API usage
-                    if entry_type == "assistant":
-                        msg = entry.get("message", {})
-                        u = msg.get("usage", {})
-                        model = msg.get("model", "unknown")
-
-                        if u:
-                            inp = u.get("input_tokens", 0)
-                            out = u.get("output_tokens", 0)
-                            cr = u.get("cache_read_input_tokens", 0)
-                            cw = u.get("cache_creation_input_tokens", 0)
-
-                            usage["input_tokens"] += inp
-                            usage["output_tokens"] += out
-                            usage["cache_read"] += cr
-                            usage["cache_write"] += cw
-                            usage["api_calls"] += 1
-
-                            usage["models"][model]["input"] += inp + cw
-                            usage["models"][model]["output"] += out
-                            usage["models"][model]["calls"] += 1
-
-                            sid = entry.get("sessionId")
-                            if sid:
-                                usage["sessions"].add(sid)
-
-                            if not usage["first_activity"] or ts < usage["first_activity"]:
-                                usage["first_activity"] = ts
-                            if not usage["last_activity"] or ts > usage["last_activity"]:
-                                usage["last_activity"] = ts
-
-        except (IOError, PermissionError):
+        except:
             continue
 
-    return usage
+    return oldest or five_hours_ago
 
 
-def fmt_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n/1_000:.0f}K"
-    return str(n)
+def parse_usage(since: datetime) -> dict:
+    """Parse usage since given time."""
+    data = {
+        "prompts": 0,
+        "opus_tokens": 0,
+        "sonnet_tokens": 0,
+        "haiku_tokens": 0,
+        "other_tokens": 0,
+    }
+
+    for fp in glob.glob(str(PROJECTS_DIR / "*" / "*.jsonl")):
+        try:
+            with open(fp, 'r') as f:
+                for line in f:
+                    try:
+                        e = json.loads(line)
+                        ts_str = e.get("timestamp")
+                        if not ts_str:
+                            continue
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                        if ts < since:
+                            continue
+
+                        if e.get("type") == "user":
+                            msg = e.get("message", {})
+                            content = msg.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                data["prompts"] += 1
+                            elif isinstance(content, list):
+                                if any(c.get("type") == "text" for c in content if isinstance(c, dict)):
+                                    data["prompts"] += 1
+
+                        if e.get("type") == "assistant":
+                            u = e.get("message", {}).get("usage", {})
+                            model = e.get("message", {}).get("model", "").lower()
+                            if u:
+                                tokens = (u.get("input_tokens", 0) +
+                                         u.get("output_tokens", 0) +
+                                         u.get("cache_creation_input_tokens", 0))
+
+                                if "opus" in model:
+                                    data["opus_tokens"] += tokens
+                                elif "sonnet" in model:
+                                    data["sonnet_tokens"] += tokens
+                                elif "haiku" in model:
+                                    data["haiku_tokens"] += tokens
+                                else:
+                                    data["other_tokens"] += tokens
+                    except:
+                        continue
+        except:
+            continue
+
+    return data
 
 
 def fmt_time(td: timedelta) -> str:
@@ -144,90 +160,91 @@ def fmt_time(td: timedelta) -> str:
     return f"{m}m"
 
 
+def fmt_tokens(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n/1_000_000_000:.1f}B"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.0f}K"
+    return str(n)
+
+
 def main():
     now = datetime.now(timezone.utc)
 
-    # Time windows
-    h5_ago = now - timedelta(hours=5)
-    h24_ago = now - timedelta(hours=24)
-    d7_ago = now - timedelta(days=7)
+    # Get time boundaries
+    session_start = get_session_start()
+    weekly_start = get_weekly_start()
 
-    # Get usage for different periods
-    h5 = parse_session_files(h5_ago)
-    h24 = parse_session_files(h24_ago)
-    d7 = parse_session_files(d7_ago)
+    # Calculate resets
+    session_elapsed = now - session_start
+    session_remaining = timedelta(hours=5) - session_elapsed
+    if session_remaining.total_seconds() < 0:
+        session_remaining = timedelta(0)
 
-    # Calculate totals
-    h5_total = h5["input_tokens"] + h5["output_tokens"] + h5["cache_write"]
-    h24_total = h24["input_tokens"] + h24["output_tokens"] + h24["cache_write"]
-    d7_total = d7["input_tokens"] + d7["output_tokens"] + d7["cache_write"]
+    # Next Thursday 3AM
+    days_until_thursday = (WEEKLY_RESET_WEEKDAY - now.weekday()) % 7
+    if days_until_thursday == 0 and now.hour >= WEEKLY_RESET_HOUR:
+        days_until_thursday = 7
+    next_reset = now.replace(hour=WEEKLY_RESET_HOUR, minute=0, second=0, microsecond=0) + timedelta(days=days_until_thursday)
+    weekly_remaining = next_reset - now
 
-    # Menu bar title - just show recent activity indicator
-    if h5["api_calls"] > 0:
-        icon = "bolt.fill"
-        color = BLUE
+    # Get usage
+    session = parse_usage(session_start)
+    weekly = parse_usage(weekly_start)
+
+    # Calculate percentages
+    session_pct = min(100, (session["prompts"] / SESSION_PROMPT_LIMIT) * 100) if SESSION_PROMPT_LIMIT > 0 else 0
+
+    weekly_opus_pct = min(100, (weekly["opus_tokens"] / WEEKLY_OPUS_LIMIT) * 100) if WEEKLY_OPUS_LIMIT > 0 else 0
+    weekly_sonnet_pct = min(100, (weekly["sonnet_tokens"] / WEEKLY_SONNET_LIMIT) * 100) if WEEKLY_SONNET_LIMIT > 0 else 0
+
+    # Combined weekly (weighted by actual limit proportions)
+    total_weekly_tokens = weekly["opus_tokens"] + weekly["sonnet_tokens"] + weekly["haiku_tokens"]
+    # Use opus percentage as primary since it's usually the constraint
+    weekly_pct = max(weekly_opus_pct, weekly_sonnet_pct)
+
+    # Overall status (worse of session or weekly)
+    overall_pct = max(session_pct, weekly_pct)
+
+    # Menu bar - show percentage
+    color = get_color(overall_pct)
+    if overall_pct >= 90:
+        icon = "exclamationmark.triangle.fill"
+    elif overall_pct >= 75:
+        icon = "exclamationmark.circle.fill"
     else:
-        icon = "moon.fill"
-        color = GRAY
+        icon = "chart.bar.fill"
 
-    print(f"CC | sfSymbol={icon} sfcolor={color}")
+    print(f"{overall_pct:.0f}% | sfSymbol={icon} sfcolor={color}")
     print("---")
 
-    # Header
-    print(f"Claude Code Usage | color={WHITE}")
-    print(f"Local data only • /status for limits | size=11 color={GRAY}")
+    # Session
+    session_color = get_color(session_pct)
+    print(f"Session: {session_pct:.0f}% | color={session_color}")
+    print(f"--{session['prompts']}/{SESSION_PROMPT_LIMIT} prompts | color={GRAY}")
+    print(f"--Resets in {fmt_time(session_remaining)} | color={GRAY}")
+
+    # Weekly
     print("---")
+    print(f"Weekly: {weekly_pct:.0f}% | color={get_color(weekly_pct)}")
 
-    # 5-Hour Window
-    print(f"Last 5 Hours | sfSymbol=clock color={GRAY}")
-    print(f"--Prompts: {h5['user_turns']} | color={WHITE}")
-    print(f"--API Calls: {h5['api_calls']} | color={GRAY}")
-    print(f"--Tokens: {fmt_tokens(h5_total)} (in: {fmt_tokens(h5['input_tokens'])}, out: {fmt_tokens(h5['output_tokens'])}) | color={GRAY}")
-    print(f"--Cache: {fmt_tokens(h5['cache_read'])} read, {fmt_tokens(h5['cache_write'])} written | color={GRAY}")
+    opus_color = get_color(weekly_opus_pct)
+    print(f"--Opus: {weekly_opus_pct:.0f}% ({fmt_tokens(weekly['opus_tokens'])}) | color={opus_color}")
 
-    # 24-Hour Window
-    print("---")
-    print(f"Last 24 Hours | sfSymbol=calendar color={GRAY}")
-    print(f"--Prompts: {h24['user_turns']} | color={WHITE}")
-    print(f"--API Calls: {h24['api_calls']} | color={GRAY}")
-    print(f"--Tokens: {fmt_tokens(h24_total)} | color={GRAY}")
-    print(f"--Sessions: {len(h24['sessions'])} | color={GRAY}")
+    sonnet_color = get_color(weekly_sonnet_pct)
+    print(f"--Sonnet: {weekly_sonnet_pct:.0f}% ({fmt_tokens(weekly['sonnet_tokens'])}) | color={sonnet_color}")
 
-    # 7-Day Window
-    print("---")
-    print(f"Last 7 Days | sfSymbol=calendar.badge.clock color={GRAY}")
-    print(f"--Prompts: {d7['user_turns']} | color={WHITE}")
-    print(f"--Tokens: {fmt_tokens(d7_total)} | color={GRAY}")
-    print(f"--Sessions: {len(d7['sessions'])} | color={GRAY}")
+    if weekly["haiku_tokens"] > 0:
+        print(f"--Haiku: {fmt_tokens(weekly['haiku_tokens'])} | color={GRAY}")
 
-    # Model breakdown (7d)
-    if d7["models"]:
-        print("---")
-        print(f"By Model (7d) | sfSymbol=cpu color={GRAY}")
-        for model, data in sorted(d7["models"].items(), key=lambda x: x[1]["output"], reverse=True):
-            if model == "unknown" or data["calls"] == 0:
-                continue
-            short = model.replace("claude-", "").replace("-20251101", "").replace("-20250929", "").replace("-20251001", "")
-            total = data["input"] + data["output"]
-            print(f"--{short}: {fmt_tokens(total)} ({data['calls']} calls) | color={GRAY}")
-
-    # Last activity
-    print("---")
-    if d7["last_activity"]:
-        ago = now - d7["last_activity"]
-        print(f"Last active: {fmt_time(ago)} ago | color={GRAY}")
-    else:
-        print(f"No recent activity | color={GRAY}")
+    print(f"--Resets {fmt_time(weekly_remaining)} | color={GRAY}")
 
     # Actions
     print("---")
     print(f"Refresh | refresh=true sfSymbol=arrow.clockwise")
-    print(f"Open ~/.claude | bash=open param1={CLAUDE_DIR} terminal=false")
-
-    # Footer
-    print("---")
-    print(f"Tip: Run /status in Claude Code | size=11 color={GRAY}")
-    print(f"for official limit info | size=11 color={GRAY}")
+    print(f"Run /status for exact numbers | color={GRAY} size=11")
 
 
 if __name__ == "__main__":
