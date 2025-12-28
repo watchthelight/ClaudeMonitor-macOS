@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "display": {
+    "show_sparkline": true,
+    "show_session": true,
+    "show_weekly": true,
+    "compact_mode": false
+  },
+  "thresholds": {
+    "green_max": 50,
+    "yellow_max": 75,
+    "orange_max": 90
+  },
+  "advanced": {
+    "cache_ttl": 3600,
+    "retry_count": 3,
+    "api_timeout": 10
+  }
+}

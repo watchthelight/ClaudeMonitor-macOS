@@ -1,155 +1,193 @@
 # Claude Code Usage Monitor for macOS
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Version-2.0.0-blue" alt="Version 2.0.0">
   <img src="https://img.shields.io/badge/Platform-macOS-blue" alt="macOS">
   <img src="https://img.shields.io/badge/SwiftBar-Compatible-green" alt="SwiftBar">
   <img src="https://img.shields.io/badge/Python-3.8+-yellow" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="MIT License">
 </p>
 
-A lightweight SwiftBar menu bar widget that displays your Claude Code usage stats in real-time, helping you track your Pro/Max subscription limits.
+A beautiful SwiftBar menu bar widget that displays your Claude Code usage stats in real-time. Shows **real API data** matching the `/status` command, with sparkline graphs, smooth color gradients, and offline support.
 
 ## Preview
 
 ```
-CC ⚡ ▾
-────────────────────────────────
-Claude Code Usage
-Local data only • /status for limits
-────────────────────────────────
-Last 5 Hours
-  └─ Prompts: 94
-  └─ API Calls: 2,783
-  └─ Tokens: 11.1M (in: 258K, out: 396K)
-  └─ Cache: 189.5M read, 10.5M written
-────────────────────────────────
-Last 24 Hours
-  └─ Prompts: 203
-  └─ API Calls: 5,831
-  └─ Tokens: 22.2M
-  └─ Sessions: 22
-────────────────────────────────
-Last 7 Days
-  └─ Prompts: 728
-  └─ Tokens: 74.0M
-  └─ Sessions: 43
-────────────────────────────────
-By Model (7d)
-  └─ opus-4-5: 63.9M (15,399 calls)
-  └─ haiku-4-5: 10.1M (2,181 calls)
+30% ▁▂▃▄▅▆ | sfSymbol=chart.bar.fill
+─────────────────────────────────
+Session
+  └─ 30% ███░░░░░░░
+  └─ Resets in 1h 13m
+  └─ Trend: ↑ +5%
+─────────────────────────────────
+Weekly
+  └─ 19% █░░░░░░░░░
+  └─ Sonnet: 1%
+  └─ Resets in 3d 9h
+─────────────────────────────────
+Settings ⚙️
+Refresh ↻
 ```
 
 ## Features
 
-- **Raw Usage Data**: Actual prompts, API calls, and token counts
-- **Multiple Time Windows**: 5-hour, 24-hour, and 7-day views
-- **Cache Stats**: See cache read vs write tokens
-- **Model Breakdown**: Usage per model (Opus, Sonnet, Haiku)
-- **SF Symbols**: Native macOS icons (⚡ active, 🌙 idle)
-- **Auto-Refresh**: Updates every 60 seconds
+### Real-Time Data
+- **Exact percentages** from Anthropic API (same as `/status` command)
+- **Session usage**: 5-hour rolling window
+- **Weekly usage**: 7-day totals with per-model breakdown
 
-## Quick Install
+### Visual Design
+- **Sparkline graphs**: Mini bar chart showing usage trend (`▁▂▃▄▅▆▇█`)
+- **Smooth color gradients**: Colors transition from green→yellow→orange→red
+- **Progress bars**: Visual percentage indicators (`███░░░░░░░`)
+- **Trend arrows**: Shows if usage is increasing (↑), decreasing (↓), or stable (→)
+- **SF Symbols**: Native macOS icons that adapt to light/dark mode
 
-### 1. Install SwiftBar
+### Reliability
+- **Offline caching**: Shows cached data when network unavailable
+- **Automatic retry**: Exponential backoff for network failures
+- **Graceful errors**: Clear messages for different failure modes
+- **Robust validation**: Handles edge cases and malformed API responses
+
+### Configuration
+- **Customizable thresholds**: Set when colors change (50%/75%/90%)
+- **Display options**: Toggle sparkline, compact mode, sections
+- **Settings menu**: Configure directly from the menu bar
+
+## Installation
+
+### Option 1: DMG Installer (Recommended)
+
+1. Download the latest `.dmg` from [Releases](https://github.com/watchthelight/ClaudeMonitor-macOS/releases)
+2. Open the DMG and double-click `install.sh`
+3. Follow the on-screen instructions
+
+### Option 2: Quick Install
 
 ```bash
+# Install SwiftBar
 brew install swiftbar
-```
 
-Or download from [swiftbar.app](https://swiftbar.app)
-
-### 2. Download & Install Plugin
-
-```bash
-# Download the plugin
-curl -fsSL https://raw.githubusercontent.com/watchthelight/ClaudeMonitor-macOS/main/claude-usage.60s.py \
+# Download and install plugin
+curl -fsSL https://raw.githubusercontent.com/watchthelight/ClaudeMonitor-macOS/main/src/claude-usage.60s.py \
   -o ~/Library/Application\ Support/SwiftBar/Plugins/claude-usage.60s.py
 
-# Make it executable
 chmod +x ~/Library/Application\ Support/SwiftBar/Plugins/claude-usage.60s.py
 ```
 
-That's it! The widget will appear in your menu bar.
+### Option 3: From Source
 
-## How It Works
-
-The plugin reads your local Claude Code session data:
-
-```
-~/.claude/projects/*/[session-id].jsonl
+```bash
+git clone https://github.com/watchthelight/ClaudeMonitor-macOS.git
+cd ClaudeMonitor-macOS
+make install
 ```
 
-Each session file contains message metadata including:
-- Token counts (input, output, cache)
-- Model used
-- Timestamps
+## Requirements
 
-The widget estimates your usage by:
-1. Counting user prompts in the last 5 hours
-2. Summing tokens over the last 7 days
-3. Comparing against known plan limits
+- **macOS 11 Big Sur** or later
+- **Python 3.8+** (included with macOS)
+- **SwiftBar** ([swiftbar.app](https://swiftbar.app))
+- **Claude Code** (logged in with Pro/Max subscription)
 
-### Important Limitations
+## Configuration
 
-⚠️ **This provides estimates only.** The actual Claude Pro/Max quotas are managed server-side by Anthropic and are not exposed via API.
+Config file: `~/.config/claude-monitor/config.json`
 
-For official usage status, use the `/status` command within Claude Code.
+```json
+{
+  "display": {
+    "show_sparkline": true,
+    "show_session": true,
+    "show_weekly": true,
+    "compact_mode": false
+  },
+  "thresholds": {
+    "green_max": 50,
+    "yellow_max": 75,
+    "orange_max": 90
+  },
+  "advanced": {
+    "cache_ttl": 3600,
+    "retry_count": 3,
+    "api_timeout": 10
+  }
+}
+```
 
-## Customization
+### Settings Menu
 
-### Change Refresh Rate
+Click the widget and go to **Settings** to:
+- Toggle sparkline display
+- Enable compact mode
+- Open config file for advanced editing
 
-Rename the file to adjust update frequency:
+### Refresh Rate
+
+Rename the plugin file to change update frequency:
 - `claude-usage.30s.py` - every 30 seconds
 - `claude-usage.60s.py` - every 60 seconds (default)
 - `claude-usage.5m.py` - every 5 minutes
 
-## Technical Details
+## How It Works
 
-### Data Sources
+The plugin fetches real usage data from the Anthropic API:
 
-| Location | Content |
-|----------|---------|
-| `~/.claude/projects/*/` | Session JSONL files with usage data |
-| `~/.claude/stats-cache.json` | Historical daily statistics |
-| `~/.claude/debug/` | Debug logs (rate limit errors) |
+```
+https://api.anthropic.com/api/oauth/usage
+```
 
-### Claude Code Rate Limits
+Using OAuth tokens stored in your macOS Keychain (from Claude Code login), it retrieves:
+- **5-hour session utilization** percentage
+- **7-day weekly utilization** percentage
+- Per-model breakdown (Opus, Sonnet)
+- Reset timestamps
 
-Claude Code uses a dual-limit system:
-1. **5-hour rolling window** - Limits burst usage
-2. **Weekly cap** - Total usage per week
-
-Both limits must be satisfied. Hitting either blocks new requests.
-
-### API Rate Limit Headers
-
-The Anthropic API returns headers like:
-- `anthropic-ratelimit-tokens-remaining`
-- `anthropic-ratelimit-requests-reset`
-
-However, these are for per-minute API limits, not subscription quotas.
+This is the same data displayed by the `/status` command in Claude Code.
 
 ## Troubleshooting
 
-### Plugin not showing?
-1. Check SwiftBar is running
-2. Verify plugin is executable: `chmod +x claude-usage.60s.py`
-3. Check for Python errors: Run manually in terminal
+### Widget shows ⚙️ (Setup Required)
+- Claude Code is not installed or not logged in
+- Run `claude` and log in with your Anthropic account
 
-### Wrong usage numbers?
-- The plugin counts user prompts, not API calls
-- Estimates may differ from Anthropic's actual tracking
-- Use `/status` in Claude Code for official numbers
+### Widget shows 🔐 (Auth Required)
+- Your session has expired
+- Run Claude Code to refresh authentication
 
-### SwiftBar plugins folder location
+### Widget shows 🌐 (Offline)
+- Network connection unavailable
+- The widget will show cached data until connection is restored
+
+### Widget shows ⚠️ (Error)
+- API error or unexpected response
+- Check for plugin updates
+
+### Test the plugin manually
+
+```bash
+python3 ~/Library/Application\ Support/SwiftBar/Plugins/claude-usage.60s.py
 ```
-~/Library/Application Support/SwiftBar/Plugins/
+
+## Development
+
+```bash
+# Clone the repo
+git clone https://github.com/watchthelight/ClaudeMonitor-macOS.git
+cd ClaudeMonitor-macOS
+
+# Quick install for testing
+make quick-install
+
+# Run tests
+make test
+
+# Build DMG
+make build
+
+# See all commands
+make help
 ```
-
-## Contributing
-
-Issues and PRs welcome! This is a community tool and improvements are appreciated.
 
 ## License
 
@@ -158,9 +196,10 @@ MIT License - See [LICENSE](LICENSE) file.
 ## Acknowledgments
 
 - Built with [SwiftBar](https://github.com/swiftbar/SwiftBar)
-- Data from Claude Code by [Anthropic](https://www.anthropic.com)
+- Uses the [Anthropic API](https://www.anthropic.com)
+- Inspired by the Claude Code community
 
-## Related Resources
+## Related
 
-- [Anthropic Rate Limits Documentation](https://platform.claude.com/docs/en/api/rate-limits)
-- [Claude Code Pro/Max Usage Guide](https://support.claude.com/en/articles/11145838-using-claude-code-with-your-pro-or-max-plan)
+- [Claude Code Documentation](https://docs.anthropic.com/en/docs/claude-code)
+- [Anthropic Rate Limits](https://docs.anthropic.com/en/api/rate-limits)
