@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Claude Code Usage Monitor v2.0 - SwiftBar Plugin
-A production-ready menu bar widget for tracking Claude Code usage.
+Claude Code Usage Monitor v2.1 - SwiftBar Plugin
+A beautiful, configurable menu bar widget for Claude Code usage.
 
 Features:
 - Real API data from Anthropic
-- Sparkline usage history
+- Multiple graph styles (bars, blocks, braille)
+- All metrics visible in menu bar
 - Smooth color gradients
-- Configurable thresholds
-- Offline caching
-- Graceful error handling
+- Configurable display
 """
 
 import json
@@ -34,11 +33,19 @@ CACHE_FILE = CONFIG_DIR / "cache.json"
 HISTORY_FILE = CONFIG_DIR / "history.json"
 
 DEFAULT_CONFIG = {
-    "version": 1,
+    "version": 2,
+    "menubar": {
+        "style": "full",           # minimal, compact, full, detailed
+        "show_icons": True,        # Show SF Symbols
+        "graph_style": "blocks",   # bars, blocks, braille, dots, none
+        "graph_width": 8,
+    },
     "display": {
         "show_sparkline": True,
         "show_session": True,
         "show_weekly": True,
+        "show_models": True,
+        "show_resets": True,
         "compact_mode": False
     },
     "thresholds": {
@@ -53,18 +60,28 @@ DEFAULT_CONFIG = {
     }
 }
 
-# Sparkline characters (9 levels: empty to full)
-SPARKLINE_CHARS = " ▁▂▃▄▅▆▇█"
+# Graph character sets
+GRAPH_STYLES = {
+    "bars": " ▁▂▃▄▅▆▇█",
+    "blocks": " ▏▎▍▌▋▊▉█",
+    "braille": "⠀⣀⣤⣶⣿",
+    "dots": "⠀⠄⠆⠇⠏⠟⠿⡿⣿",
+    "shades": " ░▒▓█",
+}
 
 # Colors (Tailwind-inspired)
 COLORS = {
     "green": "#22c55e",
+    "lime": "#84cc16",
     "yellow": "#eab308",
+    "amber": "#f59e0b",
     "orange": "#f97316",
     "red": "#ef4444",
     "gray": "#6b7280",
     "white": "#f4f4f5",
-    "blue": "#3b82f6"
+    "blue": "#3b82f6",
+    "purple": "#a855f7",
+    "cyan": "#06b6d4",
 }
 
 
@@ -106,12 +123,9 @@ def load_config() -> Dict[str, Any]:
     try:
         if CONFIG_FILE.exists():
             config = json.loads(CONFIG_FILE.read_text())
-            # Merge with defaults for any missing keys
             return deep_merge(DEFAULT_CONFIG, config)
     except (json.JSONDecodeError, IOError):
         pass
-
-    # Create default config
     save_config(DEFAULT_CONFIG)
     return DEFAULT_CONFIG.copy()
 
@@ -167,11 +181,11 @@ def save_usage_cache(usage: Dict) -> None:
 
 
 # =============================================================================
-# History Tracking (for Sparklines)
+# History Tracking
 # =============================================================================
 
 def load_history() -> List[Dict]:
-    """Load usage history for sparkline display."""
+    """Load usage history for graphs."""
     try:
         if HISTORY_FILE.exists():
             data = json.loads(HISTORY_FILE.read_text())
@@ -182,13 +196,13 @@ def load_history() -> List[Dict]:
 
 
 def save_history_entry(session_pct: float, weekly_pct: float) -> None:
-    """Save a history entry (called on each successful fetch)."""
+    """Save a history entry."""
     try:
         history = load_history()
         now = time.time()
 
-        # Only add entry if last entry is at least 5 minutes old
-        if history and (now - history[-1].get("ts", 0)) < 300:
+        # Add entry every minute (for better resolution)
+        if history and (now - history[-1].get("ts", 0)) < 55:
             return
 
         history.append({
@@ -197,8 +211,8 @@ def save_history_entry(session_pct: float, weekly_pct: float) -> None:
             "weekly": weekly_pct
         })
 
-        # Keep last 48 entries (4 hours at 5-min intervals)
-        history = history[-48:]
+        # Keep last 120 entries (2 hours at 1-min intervals)
+        history = history[-120:]
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         HISTORY_FILE.write_text(json.dumps({"entries": history}))
@@ -206,34 +220,80 @@ def save_history_entry(session_pct: float, weekly_pct: float) -> None:
         pass
 
 
-def get_sparkline(values: List[float], width: int = 8) -> str:
-    """Generate Unicode sparkline from values."""
-    if not values:
-        return SPARKLINE_CHARS[1] * width
+# =============================================================================
+# Graph Rendering
+# =============================================================================
 
-    # Take last N values
+def get_graph(values: List[float], width: int = 8, style: str = "blocks") -> str:
+    """Generate a graph from values using specified style."""
+    chars = GRAPH_STYLES.get(style, GRAPH_STYLES["blocks"])
+    levels = len(chars) - 1
+
+    if not values:
+        return chars[0] * width
+
     values = values[-width:]
 
-    min_v = min(values)
-    max_v = max(values)
-    range_v = max_v - min_v if max_v > min_v else 1
-
+    # For absolute percentage display (0-100 scale)
     result = ""
     for v in values:
-        # Map value to 0-8 index
-        idx = min(8, max(0, int((v - min_v) / range_v * 8)))
-        result += SPARKLINE_CHARS[idx]
+        v = max(0, min(100, v))
+        idx = int(v / 100 * levels)
+        result += chars[idx]
 
-    return result.ljust(width, SPARKLINE_CHARS[1])
+    return result.ljust(width, chars[0])
+
+
+def get_dual_bar(pct1: float, pct2: float, width: int = 10, style: str = "blocks") -> str:
+    """Create a dual-colored bar showing two metrics."""
+    chars = GRAPH_STYLES.get(style, GRAPH_STYLES["blocks"])
+    levels = len(chars) - 1
+
+    pct1 = max(0, min(100, pct1))
+    pct2 = max(0, min(100, pct2))
+
+    # Session portion
+    session_width = int(pct1 / 100 * width)
+    # Weekly portion (shown after session)
+    weekly_width = int(pct2 / 100 * width)
+
+    # Build combined bar
+    bar = chars[-1] * session_width
+    bar = bar.ljust(width, chars[1] if weekly_width > session_width else chars[0])
+
+    return bar
+
+
+def get_meter(pct: float, width: int = 10, filled: str = "█", empty: str = "░") -> str:
+    """Generate a meter/progress bar."""
+    pct = max(0, min(100, pct))
+    filled_width = int(pct / 100 * width)
+    return filled * filled_width + empty * (width - filled_width)
+
+
+def get_circular_indicator(pct: float) -> str:
+    """Get a circular progress indicator character."""
+    pct = max(0, min(100, pct))
+    # Use pie chart characters
+    if pct < 12.5:
+        return "○"
+    elif pct < 25:
+        return "◔"
+    elif pct < 50:
+        return "◑"
+    elif pct < 75:
+        return "◕"
+    else:
+        return "●"
 
 
 def get_trend(history: List[Dict], key: str) -> Tuple[str, float]:
     """Calculate trend arrow and change percentage."""
-    if len(history) < 2:
+    if len(history) < 5:
         return "→", 0.0
 
-    recent = [h.get(key, 0) for h in history[-4:]]  # Last ~20 minutes
-    older = [h.get(key, 0) for h in history[-8:-4]]  # Previous ~20 minutes
+    recent = [h.get(key, 0) for h in history[-5:]]
+    older = [h.get(key, 0) for h in history[-15:-5]]
 
     if not recent or not older:
         return "→", 0.0
@@ -242,9 +302,9 @@ def get_trend(history: List[Dict], key: str) -> Tuple[str, float]:
     avg_older = sum(older) / len(older)
     change = avg_recent - avg_older
 
-    if change > 2:
+    if change > 1:
         return "↑", change
-    elif change < -2:
+    elif change < -1:
         return "↓", change
     return "→", change
 
@@ -255,7 +315,7 @@ def get_trend(history: List[Dict], key: str) -> Tuple[str, float]:
 
 def interpolate_color(c1: str, c2: str, t: float) -> str:
     """Linear interpolation between two hex colors."""
-    t = max(0, min(1, t))  # Clamp to [0, 1]
+    t = max(0, min(1, t))
     r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
     r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
     r = int(r1 + (r2 - r1) * t)
@@ -265,20 +325,20 @@ def interpolate_color(c1: str, c2: str, t: float) -> str:
 
 
 def get_gradient_color(pct: float, config: Dict) -> str:
-    """Get smooth gradient color based on percentage and thresholds."""
+    """Get smooth gradient color based on percentage."""
     thresholds = config.get("thresholds", {})
     green_max = thresholds.get("green_max", 50)
     yellow_max = thresholds.get("yellow_max", 75)
     orange_max = thresholds.get("orange_max", 90)
 
-    if pct < green_max / 2:
+    if pct < green_max * 0.5:
         return COLORS["green"]
     elif pct < green_max:
-        t = (pct - green_max / 2) / (green_max / 2)
-        return interpolate_color(COLORS["green"], COLORS["yellow"], t * 0.5)
+        t = (pct - green_max * 0.5) / (green_max * 0.5)
+        return interpolate_color(COLORS["green"], COLORS["lime"], t)
     elif pct < yellow_max:
         t = (pct - green_max) / (yellow_max - green_max)
-        return interpolate_color(COLORS["yellow"], COLORS["orange"], t)
+        return interpolate_color(COLORS["yellow"], COLORS["amber"], t)
     elif pct < orange_max:
         t = (pct - yellow_max) / (orange_max - yellow_max)
         return interpolate_color(COLORS["orange"], COLORS["red"], t)
@@ -286,34 +346,11 @@ def get_gradient_color(pct: float, config: Dict) -> str:
         return COLORS["red"]
 
 
-def get_simple_color(pct: float, config: Dict) -> str:
-    """Get simple threshold-based color."""
-    thresholds = config.get("thresholds", {})
-    if pct < thresholds.get("green_max", 50):
-        return COLORS["green"]
-    elif pct < thresholds.get("yellow_max", 75):
-        return COLORS["yellow"]
-    elif pct < thresholds.get("orange_max", 90):
-        return COLORS["orange"]
-    return COLORS["red"]
-
-
-# =============================================================================
-# Progress Bar
-# =============================================================================
-
-def get_progress_bar(pct: float, width: int = 10) -> str:
-    """Generate a Unicode progress bar."""
-    filled = int(pct / 100 * width)
-    filled = max(0, min(width, filled))
-    return "█" * filled + "░" * (width - filled)
-
-
 # =============================================================================
 # Time Formatting
 # =============================================================================
 
-def fmt_time_until(iso_str: str) -> str:
+def fmt_time_until(iso_str: str, short: bool = False) -> str:
     """Format time remaining until reset."""
     try:
         reset_time = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
@@ -327,13 +364,20 @@ def fmt_time_until(iso_str: str) -> str:
         h, r = divmod(secs, 3600)
         m, _ = divmod(r, 60)
 
-        if h > 24:
-            d = h // 24
-            h = h % 24
-            return f"{d}d {h}h"
-        if h > 0:
-            return f"{h}h {m}m"
-        return f"{m}m"
+        if short:
+            if h > 24:
+                return f"{h // 24}d"
+            if h > 0:
+                return f"{h}h"
+            return f"{m}m"
+        else:
+            if h > 24:
+                d = h // 24
+                h = h % 24
+                return f"{d}d {h}h"
+            if h > 0:
+                return f"{h}h {m}m"
+            return f"{m}m"
     except (ValueError, TypeError):
         return "?"
 
@@ -354,23 +398,23 @@ def get_oauth_token() -> str:
 
         if result.returncode != 0:
             if "could not be found" in result.stderr.lower():
-                raise KeychainError("Claude Code credentials not found. Please log in to Claude Code first.")
+                raise KeychainError("Claude Code credentials not found.")
             raise KeychainError(f"Keychain access failed: {result.stderr}")
 
         creds = json.loads(result.stdout.strip())
         token = creds.get("claudeAiOauth", {}).get("accessToken")
 
         if not token:
-            raise AuthError("No OAuth token found in credentials. Please log in to Claude Code.")
+            raise AuthError("No OAuth token found.")
 
         return token
 
     except subprocess.TimeoutExpired:
         raise KeychainError("Keychain access timed out")
     except json.JSONDecodeError:
-        raise KeychainError("Invalid credentials format in Keychain")
+        raise KeychainError("Invalid credentials format")
     except FileNotFoundError:
-        raise KeychainError("'security' command not found - are you on macOS?")
+        raise KeychainError("Not running on macOS")
 
 
 def fetch_usage(config: Dict) -> Dict:
@@ -386,7 +430,7 @@ def fetch_usage(config: Dict) -> Dict:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "anthropic-beta": "oauth-2025-04-20",
-                "User-Agent": "claude-monitor/2.0.0"
+                "User-Agent": "claude-monitor/2.1.0"
             }
         )
 
@@ -395,21 +439,19 @@ def fetch_usage(config: Dict) -> Dict:
 
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            raise AuthError("Session expired. Please run Claude Code to refresh your login.")
+            raise AuthError("Session expired")
         elif e.code == 403:
-            raise AuthError("Access denied. Check your Claude subscription.")
+            raise AuthError("Access denied")
         elif e.code == 429:
-            raise APIError("Rate limited. Please wait a moment.")
+            raise APIError("Rate limited")
         elif e.code >= 500:
-            raise APIError(f"Anthropic API error ({e.code}). Try again later.")
+            raise APIError(f"API error ({e.code})")
         else:
-            raise APIError(f"API request failed: HTTP {e.code}")
+            raise APIError(f"HTTP {e.code}")
     except urllib.error.URLError as e:
-        if "timed out" in str(e).lower():
-            raise NetworkError("Request timed out. Check your connection.")
-        raise NetworkError(f"Network error: {e.reason}")
+        raise NetworkError(f"Network error")
     except json.JSONDecodeError:
-        raise APIError("Invalid API response")
+        raise APIError("Invalid response")
 
 
 def fetch_with_retry(config: Dict) -> Tuple[Optional[Dict], Optional[Exception]]:
@@ -425,26 +467,93 @@ def fetch_with_retry(config: Dict) -> Tuple[Optional[Dict], Optional[Exception]]
         except NetworkError as e:
             last_error = e
             if attempt < max_retries - 1:
-                time.sleep(1 * (2 ** attempt))  # Exponential backoff
+                time.sleep(1 * (2 ** attempt))
         except (AuthError, KeychainError, APIError) as e:
-            # Don't retry auth/API errors
             return None, e
 
     return None, last_error
 
 
 # =============================================================================
+# Menu Bar Title Builder
+# =============================================================================
+
+def build_menubar_title(usage: Dict, config: Dict, history: List[Dict]) -> str:
+    """Build the menu bar title based on configuration."""
+    menubar = config.get("menubar", {})
+    style = menubar.get("style", "full")
+    graph_style = menubar.get("graph_style", "blocks")
+    graph_width = menubar.get("graph_width", 8)
+
+    # Extract data
+    session_pct = (usage.get("five_hour") or {}).get("utilization") or 0
+    weekly_pct = (usage.get("seven_day") or {}).get("utilization") or 0
+    sonnet_pct = (usage.get("seven_day_sonnet") or {}).get("utilization") or 0
+    opus_pct = (usage.get("seven_day_opus") or {}).get("utilization") or 0
+
+    session_reset = (usage.get("five_hour") or {}).get("resets_at", "")
+    weekly_reset = (usage.get("seven_day") or {}).get("resets_at", "")
+
+    session_pct = max(0, min(100, session_pct))
+    weekly_pct = max(0, min(100, weekly_pct))
+    sonnet_pct = max(0, min(100, sonnet_pct))
+    opus_pct = max(0, min(100, opus_pct))
+
+    overall_pct = max(session_pct, weekly_pct)
+
+    parts = []
+
+    if style == "minimal":
+        # Just the overall percentage
+        parts.append(f"{overall_pct:.0f}%")
+
+    elif style == "compact":
+        # Session and Weekly percentages
+        parts.append(f"S:{session_pct:.0f}%")
+        parts.append(f"W:{weekly_pct:.0f}%")
+
+    elif style == "full":
+        # Full display with graph
+        parts.append(f"S:{session_pct:.0f}%")
+        parts.append(f"W:{weekly_pct:.0f}%")
+
+        if graph_style != "none" and history:
+            session_values = [h.get("session", 0) for h in history]
+            graph = get_graph(session_values, graph_width, graph_style)
+            parts.append(graph)
+
+    elif style == "detailed":
+        # Everything including models and reset times
+        parts.append(f"S:{session_pct:.0f}%")
+        if session_reset:
+            parts.append(f"({fmt_time_until(session_reset, short=True)})")
+
+        parts.append(f"W:{weekly_pct:.0f}%")
+
+        # Model breakdown
+        if opus_pct > 0:
+            parts.append(f"O:{opus_pct:.0f}%")
+        if sonnet_pct > 0:
+            parts.append(f"Sn:{sonnet_pct:.0f}%")
+
+        if graph_style != "none" and history:
+            session_values = [h.get("session", 0) for h in history]
+            graph = get_graph(session_values, graph_width, graph_style)
+            parts.append(graph)
+
+    return " ".join(parts)
+
+
+# =============================================================================
 # Display Functions
 # =============================================================================
 
-def show_error(icon: str, title: str, message: str, details: str = "") -> None:
+def show_error(icon: str, title: str, message: str) -> None:
     """Display error state in menu bar."""
     print(f"{icon} | sfSymbol=exclamationmark.triangle sfcolor={COLORS['red']}")
     print("---")
     print(f"{title} | color={COLORS['red']}")
     print(f"--{message} | color={COLORS['gray']}")
-    if details:
-        print(f"--{details} | color={COLORS['gray']} size=11")
     print("---")
     print("Refresh | refresh=true sfSymbol=arrow.clockwise")
 
@@ -452,8 +561,10 @@ def show_error(icon: str, title: str, message: str, details: str = "") -> None:
 def render_menu(usage: Dict, config: Dict, is_cached: bool = False) -> None:
     """Render the full menu bar display."""
     display = config.get("display", {})
+    menubar = config.get("menubar", {})
+    graph_style = menubar.get("graph_style", "blocks")
 
-    # Extract usage data with safe defaults
+    # Extract usage data
     session_data = usage.get("five_hour") or {}
     session_pct = session_data.get("utilization") or 0
     session_reset = session_data.get("resets_at", "")
@@ -462,13 +573,10 @@ def render_menu(usage: Dict, config: Dict, is_cached: bool = False) -> None:
     weekly_pct = weekly_data.get("utilization") or 0
     weekly_reset = weekly_data.get("resets_at", "")
 
-    sonnet_data = usage.get("seven_day_sonnet") or {}
-    sonnet_pct = sonnet_data.get("utilization") or 0
+    sonnet_pct = (usage.get("seven_day_sonnet") or {}).get("utilization") or 0
+    opus_pct = (usage.get("seven_day_opus") or {}).get("utilization") or 0
 
-    opus_data = usage.get("seven_day_opus") or {}
-    opus_pct = opus_data.get("utilization") or 0
-
-    # Clamp percentages to valid range
+    # Clamp values
     session_pct = max(0, min(100, session_pct))
     weekly_pct = max(0, min(100, weekly_pct))
     sonnet_pct = max(0, min(100, sonnet_pct))
@@ -476,106 +584,138 @@ def render_menu(usage: Dict, config: Dict, is_cached: bool = False) -> None:
 
     # Save to history
     save_history_entry(session_pct, weekly_pct)
+    history = load_history()
 
-    # Calculate overall status
+    # Build menu bar title
+    title = build_menubar_title(usage, config, history)
+
+    # Determine overall status for icon/color
     overall_pct = max(session_pct, weekly_pct)
-
-    # Get colors
     overall_color = get_gradient_color(overall_pct, config)
-    session_color = get_gradient_color(session_pct, config)
-    weekly_color = get_gradient_color(weekly_pct, config)
 
-    # Choose icon based on severity
     if overall_pct >= 90:
         icon = "exclamationmark.triangle.fill"
     elif overall_pct >= 75:
         icon = "exclamationmark.circle.fill"
-    else:
+    elif overall_pct >= 50:
         icon = "chart.bar.fill"
+    else:
+        icon = "checkmark.circle.fill"
 
-    # Build menu bar title
-    title_parts = [f"{overall_pct:.0f}%"]
-
-    if display.get("show_sparkline", True):
-        history = load_history()
-        if history:
-            session_values = [h.get("session", 0) for h in history]
-            sparkline = get_sparkline(session_values, 6)
-            title_parts.append(sparkline)
-
-    title = " ".join(title_parts)
-
-    # Menu bar line
-    print(f"{title} | sfSymbol={icon} sfcolor={overall_color}")
+    # Menu bar output
+    if menubar.get("show_icons", True):
+        print(f"{title} | sfSymbol={icon} sfcolor={overall_color}")
+    else:
+        print(f"{title} | color={overall_color}")
     print("---")
 
-    # Cached data warning
+    # Offline indicator
     if is_cached:
-        print(f"Offline Mode | color={COLORS['gray']} sfSymbol=wifi.slash")
+        print(f"⚡ Cached Data | color={COLORS['gray']}")
         print("---")
 
     # Session section
     if display.get("show_session", True):
-        progress = get_progress_bar(session_pct)
-        print(f"Session | color={COLORS['white']}")
-        print(f"--{session_pct:.0f}% {progress} | color={session_color}")
+        session_color = get_gradient_color(session_pct, config)
+        meter = get_meter(session_pct, 12)
+        trend_arrow, trend_val = get_trend(history, "session")
 
-        if session_reset:
-            print(f"--Resets in {fmt_time_until(session_reset)} | color={COLORS['gray']}")
+        print(f"Session ({session_pct:.0f}%) | color={COLORS['white']}")
+        print(f"--{meter} | color={session_color} font=Menlo")
 
-        # Show trend
-        history = load_history()
-        if len(history) >= 2:
-            arrow, change = get_trend(history, "session")
-            if abs(change) > 0.5:
-                sign = "+" if change > 0 else ""
-                print(f"--Trend: {arrow} {sign}{change:.0f}% | color={COLORS['gray']}")
+        if display.get("show_resets", True) and session_reset:
+            print(f"--⏱ Resets in {fmt_time_until(session_reset)} | color={COLORS['gray']}")
+
+        if len(history) >= 5 and abs(trend_val) > 0.5:
+            sign = "+" if trend_val > 0 else ""
+            print(f"--{trend_arrow} {sign}{trend_val:.1f}% trend | color={COLORS['gray']}")
+
+        # Mini sparkline in dropdown
+        if history:
+            session_vals = [h.get("session", 0) for h in history[-20:]]
+            spark = get_graph(session_vals, 20, graph_style)
+            print(f"--{spark} | font=Menlo size=10 color={COLORS['gray']}")
 
         print("---")
 
     # Weekly section
     if display.get("show_weekly", True):
-        progress = get_progress_bar(weekly_pct)
-        print(f"Weekly | color={COLORS['white']}")
-        print(f"--{weekly_pct:.0f}% {progress} | color={weekly_color}")
+        weekly_color = get_gradient_color(weekly_pct, config)
+        meter = get_meter(weekly_pct, 12)
+
+        print(f"Weekly ({weekly_pct:.0f}%) | color={COLORS['white']}")
+        print(f"--{meter} | color={weekly_color} font=Menlo")
 
         # Model breakdown
-        if opus_pct > 0:
-            print(f"--Opus: {opus_pct:.0f}% | color={get_simple_color(opus_pct, config)}")
-        if sonnet_pct > 0:
-            print(f"--Sonnet: {sonnet_pct:.0f}% | color={get_simple_color(sonnet_pct, config)}")
+        if display.get("show_models", True):
+            if opus_pct > 0:
+                opus_meter = get_meter(opus_pct, 8)
+                opus_color = get_gradient_color(opus_pct, config)
+                print(f"--Opus: {opus_pct:.0f}% {opus_meter} | color={opus_color} font=Menlo")
 
-        if weekly_reset:
-            print(f"--Resets in {fmt_time_until(weekly_reset)} | color={COLORS['gray']}")
+            if sonnet_pct > 0:
+                sonnet_meter = get_meter(sonnet_pct, 8)
+                sonnet_color = get_gradient_color(sonnet_pct, config)
+                print(f"--Sonnet: {sonnet_pct:.0f}% {sonnet_meter} | color={sonnet_color} font=Menlo")
+
+        if display.get("show_resets", True) and weekly_reset:
+            print(f"--⏱ Resets in {fmt_time_until(weekly_reset)} | color={COLORS['gray']}")
+
+        # Weekly sparkline
+        if history:
+            weekly_vals = [h.get("weekly", 0) for h in history[-20:]]
+            spark = get_graph(weekly_vals, 20, graph_style)
+            print(f"--{spark} | font=Menlo size=10 color={COLORS['gray']}")
 
         print("---")
 
     # Settings submenu
-    if not display.get("compact_mode", False):
-        script_path = os.path.abspath(__file__)
-        print(f"Settings | sfSymbol=gear")
+    script_path = os.path.abspath(__file__)
+    print(f"Settings | sfSymbol=gear")
 
-        sparkline_checked = "checked=true" if display.get("show_sparkline", True) else ""
-        print(f"--Show Sparkline | {sparkline_checked} bash={script_path} param1=--toggle param2=sparkline terminal=false refresh=true")
+    # Menu bar style
+    current_style = menubar.get("style", "full")
+    print(f"--Menu Bar Style | sfSymbol=menubar.rectangle")
+    for s in ["minimal", "compact", "full", "detailed"]:
+        checked = "checked=true" if s == current_style else ""
+        print(f"----{s.title()} | {checked} bash={script_path} param1=--set param2=style param3={s} terminal=false refresh=true")
 
-        compact_checked = "checked=true" if display.get("compact_mode", False) else ""
-        print(f"--Compact Mode | {compact_checked} bash={script_path} param1=--toggle param2=compact terminal=false refresh=true")
+    # Graph style
+    current_graph = menubar.get("graph_style", "blocks")
+    print(f"--Graph Style | sfSymbol=chart.bar.xaxis")
+    for g in ["bars", "blocks", "braille", "dots", "shades", "none"]:
+        checked = "checked=true" if g == current_graph else ""
+        sample = get_graph([20, 40, 60, 80, 100], 5, g) if g != "none" else "(disabled)"
+        print(f"----{g.title()} {sample} | {checked} bash={script_path} param1=--set param2=graph param3={g} terminal=false refresh=true font=Menlo")
 
-        print(f"--Open Config | bash=open param1={CONFIG_FILE} terminal=false")
-        print("---")
+    print("--")
+    print(f"--Open Config File | bash=open param1={CONFIG_FILE} terminal=false sfSymbol=doc.text")
 
-    # Refresh button
+    print("---")
     print("Refresh | refresh=true sfSymbol=arrow.clockwise")
 
 
 # =============================================================================
-# CLI Commands (for settings menu)
+# CLI Commands
 # =============================================================================
 
 def handle_cli_args() -> bool:
-    """Handle command line arguments for settings changes. Returns True if handled."""
+    """Handle command line arguments. Returns True if handled."""
     if len(sys.argv) < 2:
         return False
+
+    if sys.argv[1] == "--set" and len(sys.argv) >= 4:
+        config = load_config()
+        setting = sys.argv[2]
+        value = sys.argv[3]
+
+        if setting == "style":
+            config["menubar"]["style"] = value
+        elif setting == "graph":
+            config["menubar"]["graph_style"] = value
+
+        save_config(config)
+        return True
 
     if sys.argv[1] == "--toggle" and len(sys.argv) >= 3:
         config = load_config()
@@ -585,6 +725,8 @@ def handle_cli_args() -> bool:
             config["display"]["show_sparkline"] = not config["display"].get("show_sparkline", True)
         elif setting == "compact":
             config["display"]["compact_mode"] = not config["display"].get("compact_mode", False)
+        elif setting == "icons":
+            config["menubar"]["show_icons"] = not config["menubar"].get("show_icons", True)
 
         save_config(config)
         return True
@@ -597,43 +739,35 @@ def handle_cli_args() -> bool:
 # =============================================================================
 
 def main():
-    # Handle CLI commands first
     if handle_cli_args():
         return
 
-    # Ensure config directory exists
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Load configuration
     config = load_config()
 
-    # Try to fetch fresh data
     usage, error = fetch_with_retry(config)
 
     if usage:
         render_menu(usage, config, is_cached=False)
         return
 
-    # Try cached data on error
     if error:
         cached_usage, _ = load_cached_usage()
         if cached_usage:
             render_menu(cached_usage, config, is_cached=True)
             return
 
-        # Show specific error
         if isinstance(error, KeychainError):
-            show_error("⚙️", "Setup Required", "Claude Code not found", str(error))
+            show_error("⚙️", "Setup Required", "Log in to Claude Code")
         elif isinstance(error, AuthError):
-            show_error("🔐", "Auth Required", "Session expired", str(error))
+            show_error("🔐", "Auth Required", "Session expired")
         elif isinstance(error, NetworkError):
-            show_error("🌐", "Offline", "Network unavailable", str(error))
+            show_error("🌐", "Offline", "Check connection")
         else:
-            show_error("⚠️", "Error", "Failed to fetch usage", str(error))
+            show_error("⚠️", "Error", str(error))
         return
 
-    # Fallback error
-    show_error("?", "Unknown Error", "Could not fetch usage data")
+    show_error("?", "Error", "Unknown error")
 
 
 if __name__ == "__main__":

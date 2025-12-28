@@ -2,6 +2,30 @@
 
 All notable changes to Claude Monitor will be documented in this file.
 
+## [2.1.0] - 2025-12-28
+
+### Added
+- **Configurable Menu Bar Styles**: Choose how much info to show
+  - `minimal`: Just overall percentage (`31%`)
+  - `compact`: Session + Weekly (`S:31% W:19%`)
+  - `full`: With graph (`S:31% W:19% ▎▎▎▎▎▎▎▎`)
+  - `detailed`: Everything including models and reset times
+- **Multiple Graph Styles**: Choose your visual preference
+  - `bars`: ▁▂▃▄▅▆▇█ (classic)
+  - `blocks`: ▏▎▍▌▋▊▉█ (horizontal fill)
+  - `braille`: ⣀⣤⣶⣿ (dense dots)
+  - `dots`: ⠄⠆⠇⠏⠟⠿⡿⣿ (scattered dots)
+  - `shades`: ░▒▓█ (gradient shades)
+- **In-Menu Settings**: Change styles directly from dropdown
+- **Per-Model Progress Bars**: Visual meters for Opus and Sonnet
+- **Expanded Sparklines**: 20-point history graphs in dropdown
+
+### Changed
+- Better color gradient with lime and amber intermediates
+- Improved graph rendering with absolute 0-100 scale
+- Higher resolution history tracking (1-minute intervals)
+- Settings menu reorganized with submenus
+
 ## [2.0.0] - 2025-12-28
 
 ### Added

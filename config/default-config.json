@@ -1,9 +1,17 @@
 {
-  "version": 1,
+  "version": 2,
+  "menubar": {
+    "style": "full",
+    "show_icons": true,
+    "graph_style": "blocks",
+    "graph_width": 8
+  },
   "display": {
     "show_sparkline": true,
     "show_session": true,
     "show_weekly": true,
+    "show_models": true,
+    "show_resets": true,
     "compact_mode": false
   },
   "thresholds": {

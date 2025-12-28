@@ -1,7 +1,7 @@
 # Claude Monitor Makefile
 # ========================
 
-VERSION := 2.0.0
+VERSION := 2.1.0
 PLUGIN := src/claude-usage.60s.py
 SWIFTBAR_PLUGINS := $(HOME)/Library/Application Support/SwiftBar/Plugins
 
